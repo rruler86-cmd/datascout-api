@@ -1,8 +1,19 @@
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 import sqlite3
-import secrets
 import datetime
+import secrets
+import os
 
-# Автоматически создаём таблицы при запуске
+app = FastAPI()
+
+# Модель запроса
+class SearchRequest(BaseModel):
+    api_key: str
+    type: str
+    query: str
+
+# Инициализация базы данных
 def init_db():
     conn = sqlite3.connect('bot_database.db')
     cursor = conn.cursor()
@@ -31,19 +42,79 @@ def init_db():
         )
     ''')
     
-    # Добавляем тестового партнёра, если нет ни одного
     cursor.execute('SELECT COUNT(*) FROM partners')
-    count = cursor.fetchone()[0]
-    if count == 0:
+    if cursor.fetchone()[0] == 0:
         api_key = secrets.token_hex(16)
         cursor.execute('''
             INSERT INTO partners (name, api_key, balance, created_at)
             VALUES (?, ?, ?, ?)
-        ''', ('Первый партнёр', api_key, 10.0, datetime.datetime.now()))
+        ''', ('Тестовый партнёр', api_key, 10.0, datetime.datetime.now()))
         print(f"✅ Создан тестовый партнёр с ключом: {api_key}")
     
     conn.commit()
     conn.close()
 
-# Вызываем при запуске
+# Запускаем инициализацию
 init_db()
+
+# Подключение к БД
+def get_db():
+    return sqlite3.connect('bot_database.db')
+
+# ВРЕМЕННАЯ ЗАГЛУШКА
+def fake_search(search_type, query):
+    return [{"First Name": "John", "Last Name": "Smith", "Age": 35}]
+
+@app.post("/search")
+def search_partner(request: SearchRequest):
+    db = get_db()
+    cursor = db.cursor()
+    
+    cursor.execute('''
+        SELECT id, balance FROM partners 
+        WHERE api_key = ? AND is_active = 1
+    ''', (request.api_key,))
+    partner = cursor.fetchone()
+    
+    if not partner:
+        raise HTTPException(401, "Неверный API ключ")
+    
+    partner_id, balance = partner
+    
+    if balance < 0.25:
+        raise HTTPException(402, "Недостаточно средств")
+    
+    results = fake_search(request.type, request.query)
+    
+    cursor.execute('''
+        UPDATE partners SET balance = balance - 0.25 
+        WHERE id = ?
+    ''', (partner_id,))
+    
+    cursor.execute('''
+        INSERT INTO partner_queries 
+        (partner_id, query_text, search_type, cost, timestamp, status)
+        VALUES (?, ?, ?, ?, ?, ?)
+    ''', (partner_id, request.query, request.type, 0.25, datetime.datetime.now(), 'success'))
+    
+    db.commit()
+    db.close()
+    
+    return {"success": True, "data": results}
+
+@app.get("/")
+def root():
+    return {"message": "API работает"}
+
+@app.get("/balance/{api_key}")
+def get_balance(api_key: str):
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('SELECT balance FROM partners WHERE api_key = ?', (api_key,))
+    row = cursor.fetchone()
+    db.close()
+    
+    if not row:
+        raise HTTPException(404, "Партнёр не найден")
+    
+    return {"balance": row[0]}
