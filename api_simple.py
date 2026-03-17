@@ -1,51 +1,49 @@
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
 import sqlite3
+import secrets
 import datetime
-import os
 
-app = FastAPI()
-
-class SearchRequest(BaseModel):
-    api_key: str
-    type: str
-    query: str
-
-def get_db():
-    return sqlite3.connect('bot_database.db')
-
-@app.post("/search")
-def search_partner(request: SearchRequest):
-    db = get_db()
-    cursor = db.cursor()
+# Автоматически создаём таблицы при запуске
+def init_db():
+    conn = sqlite3.connect('bot_database.db')
+    cursor = conn.cursor()
     
     cursor.execute('''
-        SELECT id, balance FROM partners 
-        WHERE api_key = ? AND is_active = 1
-    ''', (request.api_key,))
-    partner = cursor.fetchone()
-    
-    if not partner:
-        raise HTTPException(401, "Неверный API ключ")
-    
-    partner_id, balance = partner
-    
-    if balance < 0.25:
-        raise HTTPException(402, "Недостаточно средств")
-    
-    # Здесь заглушка вместо поиска
-    results = [{"First Name": "John", "Last Name": "Smith", "Age": 35}]
+        CREATE TABLE IF NOT EXISTS partners (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT,
+            api_key TEXT UNIQUE,
+            balance REAL DEFAULT 0.0,
+            created_at TIMESTAMP,
+            is_active BOOLEAN DEFAULT 1
+        )
+    ''')
     
     cursor.execute('''
-        UPDATE partners SET balance = balance - 0.25 
-        WHERE id = ?
-    ''', (partner_id,))
+        CREATE TABLE IF NOT EXISTS partner_queries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            partner_id INTEGER,
+            query_text TEXT,
+            search_type TEXT,
+            cost REAL DEFAULT 0.25,
+            timestamp TIMESTAMP,
+            status TEXT,
+            FOREIGN KEY (partner_id) REFERENCES partners(id)
+        )
+    ''')
     
-    db.commit()
-    db.close()
+    # Добавляем тестового партнёра, если нет ни одного
+    cursor.execute('SELECT COUNT(*) FROM partners')
+    count = cursor.fetchone()[0]
+    if count == 0:
+        api_key = secrets.token_hex(16)
+        cursor.execute('''
+            INSERT INTO partners (name, api_key, balance, created_at)
+            VALUES (?, ?, ?, ?)
+        ''', ('Первый партнёр', api_key, 10.0, datetime.datetime.now()))
+        print(f"✅ Создан тестовый партнёр с ключом: {api_key}")
     
-    return {"success": True, "data": results}
+    conn.commit()
+    conn.close()
 
-@app.get("/")
-def root():
-    return {"message": "API работает"}
+# Вызываем при запуске
+init_db()
